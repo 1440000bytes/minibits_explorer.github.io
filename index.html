@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+    <meta charset="UTF-8">
+    <title>Minibits Explorer</title>
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+</head><link rel="stylesheet" href="./style.css">
+
+  </head>
+    
+  <body>
+  <body>
+    <div class="container">
+        <header>
+            <h1>Minibits Explorer</h1>
+        </header>
+
+        <div class="profiles-list">
+            <div class="list-header">
+                NIP-05 Addresses
+            </div>
+            <div id="profilesList">
+                <div class="empty-state" style="padding: 40px 20px;">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="profileModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="modal-title" id="modalTitle">Profile Metadata</span>
+                <span class="close">&times;</span>
+            </div>
+            <div class="modal-body" id="modalBody">
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/nostr-tools@2.7.2/lib/nostr.bundle.js"></script>
+    
+    <script>
+        
+        let profilesData = {};
+        let profileMetadata = {};
+        
+        const USE_WORKER = true;
+        const WORKER_URL = 'https://muddy-grass-9096.alicexbt.workers.dev';
+        const API_BASE_URL = USE_WORKER ? WORKER_URL : 'https://api.minibits.cash';
+        
+        const GITHUB_JSON_URL = './minibits_addresses.json';
+
+        const profilesList = document.getElementById('profilesList');
+        const modal = document.getElementById('profileModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalBody = document.getElementById('modalBody');
+        const closeBtn = document.querySelector('.close');
+
+        closeBtn.addEventListener('click', closeModal);
+        window.addEventListener('click', (e) => {
+            if (e.target === modal) closeModal();
+        });
+
+        window.addEventListener('DOMContentLoaded', loadJSONFromGitHub);
+
+        async function loadJSONFromGitHub() {
+            try {
+                console.log('Loading JSON');
+                const response = await fetch(GITHUB_JSON_URL);
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to load: ${response.statusText}`);
+                }
+                
+                const jsonData = await response.json();
+                processJSON(jsonData);
+            } catch (error) {
+                console.error('Error loading JSON:', error);
+                showError('Failed to load NIP-05 addresses from GitHub: ' + error.message);
+            }
+        }
+
+        function getProxiedUrl(url) {
+            return url;
+        }
+
+        function processJSON(data) {
+            const addresses = extractNIP05Addresses(data);
+            
+            if (addresses.length === 0) {
+                showError('No NIP-05 addresses found in the JSON file');
+                return;
+            }
+
+            profilesData = {};
+            profileMetadata = {};
+            
+            addresses.forEach(addr => {
+                profilesData[addr] = { status: 'pending' };
+            });
+
+            renderProfiles();
+        }
+
+        function extractNIP05Addresses(obj, addresses = []) {
+            if (typeof obj === 'string' && obj.includes('@') && obj.includes('.')) {
+                if (/^[^@]+@[^@]+\.[^@]+$/.test(obj)) {
+                    if (!addresses.includes(obj)) {
+                        addresses.push(obj);
+                    }
+                }
+            } else if (Array.isArray(obj)) {
+                obj.forEach(item => extractNIP05Addresses(item, addresses));
+            } else if (typeof obj === 'object' && obj !== null) {
+                Object.values(obj).forEach(value => extractNIP05Addresses(value, addresses));
+            }
+            return addresses;
+        }
+
+        function renderProfiles() {
+            const addresses = Object.keys(profilesData);
+            
+            if (addresses.length === 0) {
+                profilesList.innerHTML = `
+                    <div class="empty-state" style="padding: 40px 20px;">
+                    </div>
+                `;
+                return;
+            }
+
+            profilesList.innerHTML = addresses.map(addr => `
+                <div class="profile-item" onclick="fetchProfile('${addr}')">
+                    <span class="nip05-address">${addr}</span>
+                    <span class="status ${profilesData[addr].status}" id="status-${btoa(addr)}">
+                        ${getStatusText(profilesData[addr].status)}
+                    </span>
+                </div>
+            `).join('');
+        }
+
+        function getStatusText(status) {
+            switch(status) {
+                case 'pending': return 'Click to load';
+                case 'loading': return 'Loading...';
+                case 'success': return 'Loaded ✓';
+                case 'error': return 'Error ✗';
+                default: return '';
+            }
+        }
+
+        async function fetchProfile(nip05Address) {
+            const statusId = `status-${btoa(nip05Address)}`;
+            const statusEl = document.getElementById(statusId);
+
+            if (profileMetadata[nip05Address]) {
+                showModal(nip05Address, profileMetadata[nip05Address]);
+                return;
+            }
+
+            profilesData[nip05Address].status = 'loading';
+            if (statusEl) {
+                statusEl.className = 'status loading';
+                statusEl.textContent = 'Loading...';
+            }
+
+            try {
+                const metadata = await getProfileMetadata(nip05Address);
+                profileMetadata[nip05Address] = metadata;
+                profilesData[nip05Address].status = 'success';
+                
+                if (statusEl) {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = 'Loaded';
+                }
+
+                showModal(nip05Address, metadata);
+            } catch (error) {
+                profilesData[nip05Address].status = 'error';
+                profilesData[nip05Address].error = error.message;
+                
+                if (statusEl) {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = 'Error';
+                }
+
+                showModal(nip05Address, { error: error.message });
+            }
+        }
+
+        async function getProfileMetadata(nip05Address) {
+            try {
+                const keypair = await generateKeypair();
+                console.log('Generated keypair, pubkey:', keypair.pubkey);
+                
+                const challenge = await getChallenge(keypair.pubkey);
+                console.log('Received challenge:', challenge);
+                
+                const signedEvent = await createAndSignEvent(keypair, challenge);
+                console.log('Signed event:', signedEvent);
+                
+                const token = await verifyAndGetToken(keypair.pubkey, challenge.challenge, signedEvent);
+                console.log('Received token');
+                
+                const profile = await fetchProfileByNIP05(nip05Address, token);
+                console.log('Fetched profile:', profile);
+                
+                return profile;
+            } catch (error) {
+                console.error('Error in getProfileMetadata:', error);
+                throw error;
+            }
+        }
+
+        async function generateKeypair() {
+            const sk = NostrTools.generateSecretKey();
+            
+            const pubkey = NostrTools.getPublicKey(sk);
+            
+            const privKeyHex = Array.from(sk).map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            console.log('Generated keypair, pubkey:', pubkey);
+            
+            return {
+                privKey: sk,
+                privKeyHex: privKeyHex,
+                pubkey: pubkey
+            };
+        }
+
+        async function getChallenge(pubkey) {
+            try {
+                const url = getProxiedUrl(`${API_BASE_URL}/v3/auth/challenge`);
+                console.log('Requesting challenge from:', url);
+                
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ pubkey })
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Challenge response:', response.status, errorText);
+                    throw new Error(`Challenge request failed (${response.status}): ${errorText}`);
+                }
+
+                return await response.json();
+            } catch (error) {
+                console.error('Challenge error:', error);
+                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    throw new Error('Unable to connect to API. Please check your internet connection.');
+                }
+                throw error;
+            }
+        }
+
+        async function createAndSignEvent(keypair, challengeData) {
+            const eventTemplate = {
+                kind: 22242,
+                created_at: challengeData.createdAt || Math.floor(Date.now() / 1000),
+                tags: [
+                    ["relay", "wss://relay.minibits.cash"],
+                    ["challenge", challengeData.challenge]
+                ],
+                content: ""
+            };
+            const signedEvent = NostrTools.finalizeEvent(eventTemplate, keypair.privKey);
+            
+            console.log('Signed event:', signedEvent);
+            return signedEvent;
+        }
+
+        async function verifyAndGetToken(pubkey, challenge, signedEvent) {
+            try {
+                const url = getProxiedUrl(`${API_BASE_URL}/v3/auth/verify`);
+                console.log('Verifying with:', url);
+                
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        pubkey,
+                        challenge,
+                        signature: signedEvent.sig
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Verify response:', response.status, errorText);
+                    throw new Error(`Verification failed (${response.status}): ${errorText}`);
+                }
+
+                const data = await response.json();
+                return data.accessToken;
+            } catch (error) {
+                console.error('Verify error:', error);
+                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    throw new Error('Unable to verify with API.');
+                }
+                throw error;
+            }
+        }
+
+        async function fetchProfileByNIP05(nip05Address, token) {
+            try {
+                const url = getProxiedUrl(`${API_BASE_URL}/v3/profile/nip05/${encodeURIComponent(nip05Address)}`);
+                console.log('Fetching profile from:', url);
+                
+                const response = await fetch(url, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Profile fetch response:', response.status, errorText);
+                    throw new Error(`Profile fetch failed (${response.status}): ${errorText}`);
+                }
+
+                return await response.json();
+            } catch (error) {
+                console.error('Profile fetch error:', error);
+                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    throw new Error('Unable to fetch profile from API.');
+                }
+                throw error;
+            }
+        }
+      
+        function showModal(nip05Address, data) {
+            modalTitle.textContent = `Profile: ${nip05Address}`;
+            
+            if (data.error) {
+                modalBody.innerHTML = `
+                    <div class="error-message">
+                        <strong>Error:</strong> ${escapeHtml(data.error)}
+                    </div>
+                `;
+            } else {
+                modalBody.innerHTML = `
+                    <div class="json-viewer">${syntaxHighlight(JSON.stringify(data, null, 2))}</div>
+                `;
+            }
+            
+            modal.style.display = 'block';
+        }
+
+        function closeModal() {
+            modal.style.display = 'none';
+        }
+
+        function syntaxHighlight(json) {
+            json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+                let cls = 'json-number';
+                if (/^"/.test(match)) {
+                    if (/:$/.test(match)) {
+                        cls = 'json-key';
+                    } else {
+                        cls = 'json-string';
+                    }
+                } else if (/true|false/.test(match)) {
+                    cls = 'json-boolean';
+                } else if (/null/.test(match)) {
+                    cls = 'json-null';
+                }
+                return '<span class="' + cls + '">' + match + '</span>';
+            });
+        }
+
+        function showError(message) {
+            profilesList.innerHTML = `
+                <div style="padding: 20px;">
+                    <div class="error-message">${escapeHtml(message)}</div>
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+    
+  </body>
+  
+</html>
