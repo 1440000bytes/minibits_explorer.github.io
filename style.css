@@ -127,8 +127,8 @@
         }
 
         .status.loading {
-            background-color: #1a472a;
-            color: #4ec9b0;
+            background-color: #4d4520;
+            color: #dcdcaa;
         }
 
         .status.success {
